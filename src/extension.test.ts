@@ -142,6 +142,18 @@ describe("GitHub command dispatch", () => {
       expectedFilename: "hunk-commit-abcdef1.diff",
     },
     {
+      args: ["commit", "other/project@ABCDEF1", "--", "--pager"],
+      expectedUrl: "/repos/other/project/commits/abcdef1",
+      expectedMessage: "commit other/project@abcdef1",
+      expectedFilename: "project-commit-abcdef1.diff",
+    },
+    {
+      args: ["commit", "https://github.com/other/project/commit/ABCDEF1", "--", "--pager"],
+      expectedUrl: "/repos/other/project/commits/abcdef1",
+      expectedMessage: "commit other/project@abcdef1",
+      expectedFilename: "project-commit-abcdef1.diff",
+    },
+    {
       args: ["compare", "release/v1...feature/topic", "--", "--pager"],
       expectedUrl: "/compare/release%2Fv1...feature%2Ftopic",
       expectedMessage: "comparison modem-dev/hunk:release/v1...feature/topic",

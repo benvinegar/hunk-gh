@@ -57,24 +57,27 @@ async function prepareCommit(
 ): Promise<PreparedDiff | typeof GITHUB_COMMIT_HELP> {
   const invocation = parseGitHubCommitInvocation(args);
   if (invocation.help) return GITHUB_COMMIT_HELP;
-  const repository = await resolveGitHubRepository(
-    invocation.explicitRepository,
-    ctx.cwd,
-    ctx.signal,
-    runtime.resolveOrigin,
-  );
+  const repository =
+    invocation.locator.owner && invocation.locator.repo
+      ? { owner: invocation.locator.owner, repo: invocation.locator.repo }
+      : await resolveGitHubRepository(
+          invocation.explicitRepository,
+          ctx.cwd,
+          ctx.signal,
+          runtime.resolveOrigin,
+        );
   await ctx.stderr.write(
-    `Fetching GitHub commit ${repository.owner}/${repository.repo}@${invocation.sha}…\n`,
+    `Fetching GitHub commit ${repository.owner}/${repository.repo}@${invocation.locator.sha}…\n`,
   );
   return {
     bytes: await fetchGitHubCommitDiff(
       repository,
-      invocation.sha,
+      invocation.locator.sha,
       ctx.signal,
       runtime.env,
       runtime.fetchImpl,
     ),
-    filename: `${repository.repo}-commit-${invocation.sha}.diff`,
+    filename: `${repository.repo}-commit-${invocation.locator.sha}.diff`,
     patchArgs: invocation.patchArgs,
   };
 }

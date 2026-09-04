@@ -37,11 +37,13 @@ hunk gh pr https://github.com/modem-dev/hunk/pull/123
 
 Quote the `owner/repo#number` form because some shells treat `#` as a comment.
 
-Review a commit by its 7–40 character hexadecimal SHA:
+Review a commit by its 7–40 character hexadecimal SHA, repository shorthand, or GitHub URL:
 
 ```bash
 hunk gh commit a1b2c3d
 hunk gh commit a1b2c3d --repo modem-dev/hunk
+hunk gh commit modem-dev/hunk@a1b2c3d
+hunk gh commit https://github.com/modem-dev/hunk/commit/a1b2c3d
 ```
 
 Compare branches, tags, or commits with an explicit three-dot range:

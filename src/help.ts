@@ -3,7 +3,7 @@ export const GITHUB_HELP = `Usage: hunk gh <command>
 GitHub commands:
   pr <pull-request> [--repo <owner/repo>] [-- <patch-options...>]
       Review a GitHub pull request without requiring the gh CLI.
-  commit <sha> [--repo <owner/repo>] [-- <patch-options...>]
+  commit <commit> [--repo <owner/repo>] [-- <patch-options...>]
       Review a GitHub commit without requiring the gh CLI.
   compare <base>...<head> [--repo <owner/repo>] [-- <patch-options...>]
       Review the changes between two GitHub refs.
@@ -25,12 +25,15 @@ Authentication:
   GH_TOKEN, then GITHUB_TOKEN           optional for public repositories
 `;
 
-export const GITHUB_COMMIT_HELP = `Usage: hunk gh commit <sha> [--repo <owner/repo>] [-- <patch-options...>]
+export const GITHUB_COMMIT_HELP = `Usage: hunk gh commit <commit> [--repo <owner/repo>] [-- <patch-options...>]
 
 Review a GitHub commit without requiring the gh CLI.
 
-A 7–40 character hexadecimal commit SHA is required. The repository is inferred
-from the local origin unless --repo names it explicitly.
+Commit forms:
+  abcdef1                              infer owner/repo from the local origin
+  abcdef1 --repo modem-dev/hunk        use an explicit repository
+  modem-dev/hunk@abcdef1               name the repository and commit
+  https://github.com/modem-dev/hunk/commit/abcdef1
 `;
 
 export const GITHUB_COMPARE_HELP = `Usage: hunk gh compare <base>...<head> [--repo <owner/repo>] [-- <patch-options...>]

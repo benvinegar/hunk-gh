@@ -1,6 +1,7 @@
-import { invocationError } from "./errors";
+import { assertSafeArgument, hasControlCharacter, invocationError } from "./errors";
 import type {
   GitHubCommitInvocation,
+  GitHubCommitLocator,
   GitHubCompareInvocation,
   GitHubPrInvocation,
   GitHubPullRequestLocator,
@@ -9,14 +10,6 @@ import type {
 
 const REPOSITORY_PART = /^[A-Za-z0-9_.-]+$/;
 const INVALID_GIT_REF_CHARACTERS = [" ", "~", "^", ":", "?", "*", "[", "\\"];
-
-/** Detects terminal control characters that refs must never carry into output. */
-function hasControlCharacter(value: string): boolean {
-  return [...value].some((character) => {
-    const codePoint = character.codePointAt(0)!;
-    return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
-  });
-}
 
 /** Checks one ref against Git's refname rules before it reaches GitHub's URL path. */
 function isValidGitRef(value: string): boolean {
@@ -50,6 +43,7 @@ function parsePullRequestNumber(value: string): string {
 
 /** Validates and normalizes one owner/repository pair. */
 export function parseGitHubRepository(value: string): GitHubRepository {
+  assertSafeArgument(value, "GitHub repository");
   const parts = value.split("/");
   if (
     parts.length !== 2 ||
@@ -152,16 +146,62 @@ export function parseGitHubPrInvocation(args: readonly string[]): GitHubPrInvoca
   return { locator, explicitRepository, patchArgs: Object.freeze([...patchArgs]), help: false };
 }
 
-/** Parses one commit SHA, optional repository, and delegated patch options. */
+/** Parses one SHA, owner/repo@SHA shorthand, or exact github.com commit URL. */
+export function parseGitHubCommitLocator(value: string): GitHubCommitLocator {
+  assertSafeArgument(value, "Commit locator");
+  if (/^[0-9a-f]{7,40}$/i.test(value)) return { sha: value.toLowerCase() };
+
+  const shorthand = /^([^/@]+\/[^/@]+)@([^@]+)$/.exec(value);
+  if (shorthand) {
+    const repository = parseGitHubRepository(shorthand[1]!);
+    const sha = shorthand[2]!;
+    if (!/^[0-9a-f]{7,40}$/i.test(sha)) throw invocationError(`Invalid commit SHA: ${sha}`);
+    return { ...repository, sha: sha.toLowerCase() };
+  }
+
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw invocationError(`Invalid GitHub commit locator: ${value}`);
+  }
+  if (
+    !/^https:\/\/github\.com\//i.test(value) ||
+    url.protocol !== "https:" ||
+    url.hostname.toLowerCase() !== "github.com" ||
+    url.port ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
+    throw invocationError("Commit URLs must be unmodified https://github.com URLs.");
+  }
+
+  const rawPath = /^https:\/\/github\.com\/([^/?#]+)\/([^/?#]+)\/commit\/([^/?#]+)$/i.exec(value);
+  if (!rawPath || url.pathname !== `/${rawPath[1]}/${rawPath[2]}/commit/${rawPath[3]}`) {
+    throw invocationError("GitHub commit URLs must end with /owner/repo/commit/sha.");
+  }
+  const repository = parseGitHubRepository(`${rawPath[1]}/${rawPath[2]}`);
+  const sha = rawPath[3]!;
+  if (!/^[0-9a-f]{7,40}$/i.test(sha)) throw invocationError(`Invalid commit SHA: ${sha}`);
+  return { ...repository, sha: sha.toLowerCase() };
+}
+
+/** Parses one commit locator, optional repository, and delegated patch options. */
 export function parseGitHubCommitInvocation(args: readonly string[]): GitHubCommitInvocation {
   const separator = args.indexOf("--");
   const ownedArgs = separator < 0 ? args : args.slice(0, separator);
   const patchArgs = separator < 0 ? [] : args.slice(separator + 1);
   if (ownedArgs.includes("--help") || ownedArgs.includes("-h")) {
-    return { sha: "0000000", patchArgs: Object.freeze([...patchArgs]), help: true };
+    return {
+      locator: { sha: "0000000" },
+      patchArgs: Object.freeze([...patchArgs]),
+      help: true,
+    };
   }
 
-  let sha: string | undefined;
+  let target: string | undefined;
   let explicitRepository: string | undefined;
   for (let index = 0; index < ownedArgs.length; index += 1) {
     const token = ownedArgs[index]!;
@@ -170,6 +210,7 @@ export function parseGitHubCommitInvocation(args: readonly string[]): GitHubComm
       if (explicitRepository !== undefined || !value || value.startsWith("--")) {
         throw invocationError("`--repo` requires one owner/repo value.");
       }
+      assertSafeArgument(value, "GitHub repository");
       explicitRepository = value;
       index += 1;
       continue;
@@ -177,19 +218,29 @@ export function parseGitHubCommitInvocation(args: readonly string[]): GitHubComm
     if (token.startsWith("--repo=")) {
       if (explicitRepository !== undefined) throw invocationError("Specify --repo only once.");
       explicitRepository = token.slice("--repo=".length);
+      assertSafeArgument(explicitRepository, "GitHub repository");
       continue;
     }
-    if (token.startsWith("-")) throw invocationError(`Unknown commit option: ${token}`);
-    if (sha !== undefined) throw invocationError("Specify exactly one commit SHA.");
-    sha = token;
+    if (token.startsWith("-")) {
+      assertSafeArgument(token, "Commit option");
+      throw invocationError(`Unknown commit option: ${token}`);
+    }
+    if (target !== undefined) throw invocationError("Specify exactly one commit.");
+    target = token;
   }
 
-  if (!sha || !/^[0-9a-f]{7,40}$/i.test(sha)) {
-    throw invocationError(`Invalid commit SHA: ${sha ?? "missing"}`);
+  if (!target) throw invocationError("Specify one GitHub commit.");
+  const locator = parseGitHubCommitLocator(target);
+  if (explicitRepository !== undefined) {
+    parseGitHubRepository(explicitRepository);
+    if (locator.owner || locator.repo) {
+      throw invocationError(
+        "Do not combine --repo with a locator that already names a repository.",
+      );
+    }
   }
-  if (explicitRepository !== undefined) parseGitHubRepository(explicitRepository);
   return {
-    sha: sha.toLowerCase(),
+    locator,
     explicitRepository,
     patchArgs: Object.freeze([...patchArgs]),
     help: false,

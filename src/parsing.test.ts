@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
+import { hasControlCharacter } from "./errors";
 import {
   parseGitHubCommitInvocation,
+  parseGitHubCommitLocator,
   parseGitHubCompareInvocation,
   parseGitHubPrInvocation,
   parseGitHubPullRequestLocator,
@@ -137,14 +139,24 @@ describe("GitHub compare invocation parsing", () => {
 });
 
 describe("GitHub commit invocation parsing", () => {
-  test("accepts hexadecimal SHAs, repositories, and patch options", () => {
+  test("accepts hexadecimal SHAs, repository shorthands, URLs, and patch options", () => {
     expect(
       parseGitHubCommitInvocation(["ABCDEF1", "--repo", "modem-dev/hunk", "--", "--pager"]),
     ).toEqual({
-      sha: "abcdef1",
+      locator: { sha: "abcdef1" },
       explicitRepository: "modem-dev/hunk",
       patchArgs: ["--pager"],
       help: false,
+    });
+    expect(parseGitHubCommitLocator("modem-dev/hunk@ABCDEF1")).toEqual({
+      owner: "modem-dev",
+      repo: "hunk",
+      sha: "abcdef1",
+    });
+    expect(parseGitHubCommitLocator("https://github.com/modem-dev/hunk/commit/ABCDEF1")).toEqual({
+      owner: "modem-dev",
+      repo: "hunk",
+      sha: "abcdef1",
     });
     expect(parseGitHubCommitInvocation(["--help"])).toMatchObject({ help: true });
   });
@@ -158,8 +170,53 @@ describe("GitHub commit invocation parsing", () => {
       ["abcdef1", "1234567"],
       ["abcdef1", "--repo="],
       ["abcdef1", "--repo", "owner/.."],
+      ["owner/repo@abcdef1", "--repo", "owner/repo"],
+      ["https://github.com/owner/repo/commit/abcdef1", "--repo", "owner/repo"],
     ]) {
       expect(() => parseGitHubCommitInvocation(args)).toThrow();
+    }
+  });
+
+  test("rejects unsafe or modified shorthand and URL forms", () => {
+    for (const locator of [
+      "owner/../repo@abcdef1",
+      "owner/repo@abcdef",
+      "owner/repo@abcdefg",
+      "owner/repo@abcdef1@1234567",
+      "https://gitlab.com/owner/repo/commit/abcdef1",
+      "http://github.com/owner/repo/commit/abcdef1",
+      "https://user@github.com/owner/repo/commit/abcdef1",
+      "https://github.com:443/owner/repo/commit/abcdef1",
+      "https://github.com:444/owner/repo/commit/abcdef1",
+      "https://github.com/owner/repo/commit/abcdef1/extra",
+      "https://github.com/owner/repo/commit/abcdef1/",
+      "https://github.com/owner/other/../repo/commit/abcdef1",
+      "https://github.com/owner/other/%2e%2e/repo/commit/abcdef1",
+      "https://github.com/owner/other/%2E%2E/repo/commit/abcdef1",
+      "https://github.com/owner/repo/commit/abcdef1?diff=1",
+      "https://github.com/owner/repo/commit/abcdef1#files",
+      "https://github.com/owner/repo/commit/abcdefg",
+      "https://github.com/owner%2Frepo/name/commit/abcdef1",
+      "owner/repo@abc\u0007def1",
+      "https://github.com/owner/repo/commit/abc\u007fdef1",
+    ]) {
+      expect(() => parseGitHubCommitLocator(locator)).toThrow();
+    }
+  });
+
+  test("rejects control characters before echoing commit arguments", () => {
+    for (const args of [
+      ["abcdef1", "--repo", "owner/repo\u001b[31m"],
+      ["abcdef1", "--repo=owner/repo\u0085"],
+      ["abcdef1", "--bad\u007foption"],
+    ]) {
+      try {
+        parseGitHubCommitInvocation(args);
+        throw new Error("Expected unsafe argument rejection.");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        expect(hasControlCharacter(message)).toBe(false);
+      }
     }
   });
 });

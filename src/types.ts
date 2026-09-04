@@ -20,8 +20,14 @@ export interface ResolvedGitHubPullRequest extends GitHubRepository {
   number: string;
 }
 
-export interface GitHubCommitInvocation {
+export interface GitHubCommitLocator {
+  owner?: string;
+  repo?: string;
   sha: string;
+}
+
+export interface GitHubCommitInvocation {
+  locator: GitHubCommitLocator;
   explicitRepository?: string;
   patchArgs: readonly string[];
   help: boolean;
