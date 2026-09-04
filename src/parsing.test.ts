@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   parseGitHubCommitInvocation,
+  parseGitHubCompareInvocation,
   parseGitHubPrInvocation,
   parseGitHubPullRequestLocator,
   parseGitHubRepository,
@@ -76,6 +77,61 @@ describe("GitHub PR invocation parsing", () => {
       "https://github.com/owner/repo/pull/1#discussion",
     ]) {
       expect(() => parseGitHubPullRequestLocator(locator)).toThrow();
+    }
+  });
+});
+
+describe("GitHub compare invocation parsing", () => {
+  test("accepts refs, repositories, and delegated patch options", () => {
+    expect(
+      parseGitHubCompareInvocation([
+        "release/v1...feature/topic",
+        "--repo=modem-dev/hunk",
+        "--",
+        "--pager",
+      ]),
+    ).toEqual({
+      base: "release/v1",
+      head: "feature/topic",
+      explicitRepository: "modem-dev/hunk",
+      patchArgs: ["--pager"],
+      help: false,
+    });
+    expect(parseGitHubCompareInvocation(["release#1...feature%topic"])).toMatchObject({
+      base: "release#1",
+      head: "feature%topic",
+    });
+    expect(parseGitHubCompareInvocation([`${"a".repeat(1024)}...head`])).toMatchObject({
+      base: "a".repeat(1024),
+      head: "head",
+    });
+    expect(parseGitHubCompareInvocation(["--help"])).toMatchObject({ help: true });
+  });
+
+  test("rejects malformed ranges, unsupported characters, and ambiguous options", () => {
+    for (const args of [
+      [],
+      ["main..feature"],
+      ["main......feature"],
+      ["...feature"],
+      ["main..."],
+      ["main...feature", "other...head"],
+      ["main...feature", "--unknown"],
+      ["main...feature", "--repo="],
+      ["main...feature", "--repo", "owner/.."],
+      ["main...feature?query"],
+      ["main..old...feature"],
+      ["main...feature.lock"],
+      ["main...feature\\topic"],
+      ["main...feature\u0007topic"],
+      ["main...feature\u0085topic"],
+      ["main...feature\u007ftopic"],
+      ["main...feature@{1}"],
+      ["main...feature//topic"],
+      ["main...feature."],
+      ["main..." + "é".repeat(513)],
+    ]) {
+      expect(() => parseGitHubCompareInvocation(args)).toThrow();
     }
   });
 });

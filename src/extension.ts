@@ -4,9 +4,17 @@ import {
   type ExtensionCliCommandHandler,
   type ExtensionFactory,
 } from "hunkdiff/extension";
-import { fetchGitHubCommitDiff, fetchGitHubPullRequestDiff } from "./github";
-import { GITHUB_COMMIT_HELP, GITHUB_HELP, GITHUB_PR_HELP } from "./help";
-import { parseGitHubCommitInvocation, parseGitHubPrInvocation } from "./parsing";
+import {
+  fetchGitHubCommitDiff,
+  fetchGitHubCompareDiff,
+  fetchGitHubPullRequestDiff,
+} from "./github";
+import { GITHUB_COMMIT_HELP, GITHUB_COMPARE_HELP, GITHUB_HELP, GITHUB_PR_HELP } from "./help";
+import {
+  parseGitHubCommitInvocation,
+  parseGitHubCompareInvocation,
+  parseGitHubPrInvocation,
+} from "./parsing";
 import { readGitOrigin, resolveGitHubPullRequest, resolveGitHubRepository } from "./repository";
 import { TemporaryPatchStore } from "./temporaryPatch";
 import type { GitHubExtensionRuntime } from "./types";
@@ -71,6 +79,37 @@ async function prepareCommit(
   };
 }
 
+/** Resolves and fetches one comparison command into a patch-ready diff. */
+async function prepareCompare(
+  args: readonly string[],
+  ctx: Parameters<ExtensionCliCommandHandler>[1],
+  runtime: GitHubExtensionRuntime,
+): Promise<PreparedDiff | typeof GITHUB_COMPARE_HELP> {
+  const invocation = parseGitHubCompareInvocation(args);
+  if (invocation.help) return GITHUB_COMPARE_HELP;
+  const repository = await resolveGitHubRepository(
+    invocation.explicitRepository,
+    ctx.cwd,
+    ctx.signal,
+    runtime.resolveOrigin,
+  );
+  await ctx.stderr.write(
+    `Fetching GitHub comparison ${repository.owner}/${repository.repo}:${invocation.base}...${invocation.head}…\n`,
+  );
+  return {
+    bytes: await fetchGitHubCompareDiff(
+      repository,
+      invocation.base,
+      invocation.head,
+      ctx.signal,
+      runtime.env,
+      runtime.fetchImpl,
+    ),
+    filename: `${repository.repo}-compare.diff`,
+    patchArgs: invocation.patchArgs,
+  };
+}
+
 /** Builds the GitHub extension with injectable runtime boundaries for tests. */
 export function createGitHubPrExtension(
   overrides: Partial<GitHubExtensionRuntime> = {},
@@ -98,6 +137,8 @@ export function createGitHubPrExtension(
         prepared = await preparePullRequest(args.slice(1), ctx, runtime);
       } else if (args[0] === "commit") {
         prepared = await prepareCommit(args.slice(1), ctx, runtime);
+      } else if (args[0] === "compare") {
+        prepared = await prepareCompare(args.slice(1), ctx, runtime);
       } else {
         throw new HunkExtensionUserError(`Unknown GitHub command: ${args[0]}`, {
           suggestions: ["Run `hunk gh --help` to list available commands."],
@@ -113,14 +154,14 @@ export function createGitHubPrExtension(
       const patchPath = await patches.write(prepared.filename, prepared.bytes);
       if (ctx.signal.aborted) {
         await patches.remove(patchPath);
-        throw new HunkExtensionUserError("GitHub pull-request loading was cancelled.");
+        throw new HunkExtensionUserError("GitHub diff loading was cancelled.");
       }
       await ctx.stderr.write(
         `Opening ${prepared.bytes.byteLength.toLocaleString()} bytes in Hunk…\n`,
       );
       if (ctx.signal.aborted) {
         await patches.remove(patchPath);
-        throw new HunkExtensionUserError("GitHub pull-request loading was cancelled.");
+        throw new HunkExtensionUserError("GitHub diff loading was cancelled.");
       }
       return { kind: "delegate", argv: ["patch", patchPath, ...prepared.patchArgs] };
     };
@@ -128,8 +169,8 @@ export function createGitHubPrExtension(
     hunk.registerCliCommand(
       {
         name: "gh",
-        summary: "Review GitHub pull requests and commits",
-        usage: "pr <number|owner/repo#number|pull-request-url> [--repo <owner/repo>]",
+        summary: "Review GitHub pull requests, commits, and comparisons",
+        usage: "<pr|commit|compare> <target> [--repo <owner/repo>]",
       },
       handler,
     );

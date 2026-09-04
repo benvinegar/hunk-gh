@@ -101,8 +101,8 @@ describe("GitHub command dispatch", () => {
     );
     expect(registration.command).toEqual({
       name: "gh",
-      summary: "Review GitHub pull requests and commits",
-      usage: "pr <number|owner/repo#number|pull-request-url> [--repo <owner/repo>]",
+      summary: "Review GitHub pull requests, commits, and comparisons",
+      usage: "<pr|commit|compare> <target> [--repo <owner/repo>]",
     });
     if (!registration.handler) throw new Error("Expected command registration.");
 
@@ -110,6 +110,7 @@ describe("GitHub command dispatch", () => {
       [["--help"], "Usage: hunk gh <command>"],
       [["pr", "--help"], "Usage: hunk gh pr"],
       [["commit", "--help"], "Usage: hunk gh commit"],
+      [["compare", "--help"], "Usage: hunk gh compare"],
     ] as const) {
       const output = createTestContext();
       await expect(registration.handler(args, output.context)).resolves.toEqual({ kind: "exit" });
@@ -139,6 +140,12 @@ describe("GitHub command dispatch", () => {
       expectedUrl: "/commits/abcdef1",
       expectedMessage: "commit modem-dev/hunk@abcdef1",
       expectedFilename: "hunk-commit-abcdef1.diff",
+    },
+    {
+      args: ["compare", "release/v1...feature/topic", "--", "--pager"],
+      expectedUrl: "/compare/release%2Fv1...feature%2Ftopic",
+      expectedMessage: "comparison modem-dev/hunk:release/v1...feature/topic",
+      expectedFilename: "hunk-compare.diff",
     },
   ])("fetches and delegates the $args[0] command", async (scenario) => {
     const temporaryRoot = createTestDirectory();

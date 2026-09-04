@@ -26,13 +26,17 @@ function githubDiffHeaders(env: NodeJS.ProcessEnv, userAgent: string): Headers {
 }
 
 /** Reads a bounded response body so a remote server cannot exhaust process memory. */
-async function readBoundedResponse(response: Response, signal: AbortSignal): Promise<Uint8Array> {
+async function readBoundedResponse(
+  response: Response,
+  signal: AbortSignal,
+  emptyMessage = "GitHub returned an empty diff.",
+): Promise<Uint8Array> {
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > MAX_DIFF_BYTES) {
-    throw new HunkExtensionUserError("The pull-request diff exceeds the 64 MiB safety limit.");
+    throw new HunkExtensionUserError("The GitHub diff exceeds the 64 MiB safety limit.");
   }
   if (!response.body) {
-    throw new HunkExtensionUserError("GitHub returned an empty pull-request response.");
+    throw new HunkExtensionUserError(emptyMessage);
   }
 
   const reader = response.body.getReader();
@@ -41,20 +45,20 @@ async function readBoundedResponse(response: Response, signal: AbortSignal): Pro
   try {
     while (true) {
       if (signal.aborted) {
-        throw new HunkExtensionUserError("GitHub pull-request loading was cancelled.");
+        throw new HunkExtensionUserError("GitHub diff loading was cancelled.");
       }
       const next = await reader.read();
       if (next.done) break;
       total += next.value.byteLength;
       if (total > MAX_DIFF_BYTES) {
         await reader.cancel();
-        throw new HunkExtensionUserError("The pull-request diff exceeds the 64 MiB safety limit.");
+        throw new HunkExtensionUserError("The GitHub diff exceeds the 64 MiB safety limit.");
       }
       chunks.push(next.value);
     }
   } catch (error) {
     if (signal.aborted) {
-      throw new HunkExtensionUserError("GitHub pull-request loading was cancelled.");
+      throw new HunkExtensionUserError("GitHub diff loading was cancelled.");
     }
     throw error;
   } finally {
@@ -68,7 +72,7 @@ async function readBoundedResponse(response: Response, signal: AbortSignal): Pro
     offset += chunk.byteLength;
   }
   if (bytes.byteLength === 0) {
-    throw new HunkExtensionUserError("GitHub returned an empty pull-request diff.");
+    throw new HunkExtensionUserError(emptyMessage);
   }
   return bytes;
 }
@@ -175,4 +179,56 @@ export async function fetchGitHubCommitDiff(
     throw new HunkExtensionUserError(`GitHub returned HTTP ${response.status} for ${name}.`);
   }
   return readBoundedResponse(response, signal);
+}
+
+/** Fetches the diff between two GitHub refs without invoking the gh CLI. */
+export async function fetchGitHubCompareDiff(
+  repository: GitHubRepository,
+  base: string,
+  head: string,
+  signal: AbortSignal,
+  env: NodeJS.ProcessEnv = process.env,
+  fetchImpl: GitHubFetch = fetch,
+): Promise<Uint8Array> {
+  const name = `${repository.owner}/${repository.repo}:${base}...${head}`;
+  let response: Response;
+  try {
+    const range = `${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
+    response = await fetchImpl(
+      `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}/compare/${range}`,
+      { headers: githubDiffHeaders(env, "hunk-gh-extension"), redirect: "manual", signal },
+    );
+  } catch (error) {
+    if (error instanceof HunkExtensionUserError) throw error;
+    if (signal.aborted)
+      throw new HunkExtensionUserError("GitHub comparison loading was cancelled.");
+    throw new HunkExtensionUserError("GitHub could not be reached while loading the comparison.");
+  }
+  if (!response.ok) {
+    if (response.status === 401) {
+      throw new HunkExtensionUserError(`GitHub rejected the configured token for ${name}.`);
+    }
+    if (response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0") {
+      throw new HunkExtensionUserError(`GitHub API rate limiting blocked ${name}.`);
+    }
+    if (response.status === 403) {
+      throw new HunkExtensionUserError(`GitHub denied access to ${name}.`);
+    }
+    if (response.status === 404) {
+      throw new HunkExtensionUserError(
+        `GitHub could not find an accessible comparison at ${name}.`,
+      );
+    }
+    if (response.status >= 300 && response.status < 400) {
+      throw new HunkExtensionUserError(
+        "GitHub redirected the comparison request; refusing to forward credentials.",
+      );
+    }
+    throw new HunkExtensionUserError(`GitHub returned HTTP ${response.status} for ${name}.`);
+  }
+  return readBoundedResponse(
+    response,
+    signal,
+    `GitHub found no changes between ${base} and ${head}.`,
+  );
 }

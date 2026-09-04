@@ -1,12 +1,42 @@
 import { invocationError } from "./errors";
 import type {
   GitHubCommitInvocation,
+  GitHubCompareInvocation,
   GitHubPrInvocation,
   GitHubPullRequestLocator,
   GitHubRepository,
 } from "./types";
 
 const REPOSITORY_PART = /^[A-Za-z0-9_.-]+$/;
+const INVALID_GIT_REF_CHARACTERS = [" ", "~", "^", ":", "?", "*", "[", "\\"];
+
+/** Detects terminal control characters that refs must never carry into output. */
+function hasControlCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0)!;
+    return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
+  });
+}
+
+/** Checks one ref against Git's refname rules before it reaches GitHub's URL path. */
+function isValidGitRef(value: string): boolean {
+  if (new TextEncoder().encode(value).byteLength > 1024) return false;
+  if (
+    !value ||
+    value === "@" ||
+    value.startsWith("/") ||
+    value.endsWith("/") ||
+    value.endsWith(".") ||
+    value.includes("//") ||
+    value.includes("..") ||
+    value.includes("@{") ||
+    hasControlCharacter(value) ||
+    INVALID_GIT_REF_CHARACTERS.some((character) => value.includes(character))
+  ) {
+    return false;
+  }
+  return value.split("/").every((part) => !part.startsWith(".") && !part.endsWith(".lock"));
+}
 
 /** Validates and normalizes one positive GitHub pull-request number. */
 function parsePullRequestNumber(value: string): string {
@@ -160,6 +190,59 @@ export function parseGitHubCommitInvocation(args: readonly string[]): GitHubComm
   if (explicitRepository !== undefined) parseGitHubRepository(explicitRepository);
   return {
     sha: sha.toLowerCase(),
+    explicitRepository,
+    patchArgs: Object.freeze([...patchArgs]),
+    help: false,
+  };
+}
+
+/** Parses one base...head comparison, optional repository, and delegated patch options. */
+export function parseGitHubCompareInvocation(args: readonly string[]): GitHubCompareInvocation {
+  const separator = args.indexOf("--");
+  const ownedArgs = separator < 0 ? args : args.slice(0, separator);
+  const patchArgs = separator < 0 ? [] : args.slice(separator + 1);
+  if (ownedArgs.includes("--help") || ownedArgs.includes("-h")) {
+    return { base: "base", head: "head", patchArgs: Object.freeze([...patchArgs]), help: true };
+  }
+
+  let range: string | undefined;
+  let explicitRepository: string | undefined;
+  for (let index = 0; index < ownedArgs.length; index += 1) {
+    const token = ownedArgs[index]!;
+    if (token === "--repo") {
+      if (explicitRepository !== undefined) throw invocationError("Specify --repo only once.");
+      const value = ownedArgs[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw invocationError("`--repo` requires an owner/repo value.");
+      }
+      explicitRepository = value;
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--repo=")) {
+      if (explicitRepository !== undefined) throw invocationError("Specify --repo only once.");
+      explicitRepository = token.slice("--repo=".length);
+      if (!explicitRepository) throw invocationError("`--repo` requires an owner/repo value.");
+      continue;
+    }
+    if (token.startsWith("-")) throw invocationError(`Unknown compare option: ${token}`);
+    if (range !== undefined) throw invocationError("Specify exactly one comparison.");
+    range = token;
+  }
+
+  if (!range) throw invocationError("Specify one base...head comparison.");
+  const parts = range.split("...");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw invocationError("Comparisons must use exactly one base...head range.");
+  }
+  const [base, head] = parts;
+  if (!isValidGitRef(base) || !isValidGitRef(head)) {
+    throw invocationError("Comparison refs are not valid Git refs or exceed 1024 UTF-8 bytes.");
+  }
+  if (explicitRepository !== undefined) parseGitHubRepository(explicitRepository);
+  return {
+    base,
+    head,
     explicitRepository,
     patchArgs: Object.freeze([...patchArgs]),
     help: false,

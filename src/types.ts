@@ -27,6 +27,14 @@ export interface GitHubCommitInvocation {
   help: boolean;
 }
 
+export interface GitHubCompareInvocation {
+  base: string;
+  head: string;
+  explicitRepository?: string;
+  patchArgs: readonly string[];
+  help: boolean;
+}
+
 export type GitHubFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 export interface GitHubExtensionRuntime {

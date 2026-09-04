@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { fetchGitHubCommitDiff, fetchGitHubPullRequestDiff } from "./github";
+import {
+  fetchGitHubCommitDiff,
+  fetchGitHubCompareDiff,
+  fetchGitHubPullRequestDiff,
+} from "./github";
 import type { GitHubFetch } from "./types";
 
 const signal = () => new AbortController().signal;
@@ -124,6 +128,120 @@ describe("GitHub pull-request fetching", () => {
       ),
     ).rejects.toThrow("cancelled");
     expect(pulls).toBe(1);
+  });
+});
+
+describe("GitHub comparison fetching", () => {
+  test("encodes refs independently and requests a bounded diff without redirects", async () => {
+    let requestUrl = "";
+    let requestInit: RequestInit | undefined;
+    const bytes = await fetchGitHubCompareDiff(
+      { owner: "modem-dev", repo: "hunk" },
+      "release/v1",
+      "feature#topic",
+      signal(),
+      { GH_TOKEN: "token" },
+      (async (url, init) => {
+        requestUrl = String(url);
+        requestInit = init;
+        return new Response("diff --git a/a b/a\n");
+      }) as GitHubFetch,
+    );
+    expect(requestUrl).toBe(
+      "https://api.github.com/repos/modem-dev/hunk/compare/release%2Fv1...feature%23topic",
+    );
+    expect(requestInit?.redirect).toBe("manual");
+    expect(new Headers(requestInit?.headers).get("accept")).toBe("application/vnd.github.v3.diff");
+    expect(new Headers(requestInit?.headers).get("authorization")).toBe("Bearer token");
+    expect(new TextDecoder().decode(bytes)).toContain("diff --git");
+  });
+
+  test("keeps tokens and response bodies out of comparison errors", async () => {
+    for (const response of [
+      new Response("sensitive body", { status: 401 }),
+      new Response("sensitive body", { status: 403 }),
+      new Response("sensitive body", { status: 404 }),
+      new Response("sensitive body", { status: 500 }),
+      new Response(null, { status: 302 }),
+    ]) {
+      try {
+        await fetchGitHubCompareDiff(
+          { owner: "private", repo: "repo" },
+          "base",
+          "head",
+          signal(),
+          { GH_TOKEN: "top-secret-token" },
+          (async () => response) as GitHubFetch,
+        );
+        throw new Error("Expected comparison failure.");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        expect(message).not.toContain("top-secret-token");
+        expect(message).not.toContain("sensitive body");
+      }
+    }
+  });
+
+  test("reports a successful empty comparison as no changes", async () => {
+    for (const response of [new Response(""), new Response(null)]) {
+      await expect(
+        fetchGitHubCompareDiff(
+          { owner: "modem-dev", repo: "hunk" },
+          "base",
+          "head",
+          signal(),
+          {},
+          (async () => response) as GitHubFetch,
+        ),
+      ).rejects.toThrow("no changes between base and head");
+    }
+  });
+
+  test("reports cancellation and network failures without transport details", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      fetchGitHubCompareDiff(
+        { owner: "modem-dev", repo: "hunk" },
+        "base",
+        "head",
+        controller.signal,
+        {},
+        (async () => {
+          throw new Error("network internals");
+        }) as GitHubFetch,
+      ),
+    ).rejects.toThrow("cancelled");
+    const streamingController = new AbortController();
+    const body = new ReadableStream<Uint8Array>({
+      pull(stream) {
+        stream.enqueue(new TextEncoder().encode("diff --git a/a b/a\n"));
+        streamingController.abort();
+      },
+    });
+    await expect(
+      fetchGitHubCompareDiff(
+        { owner: "modem-dev", repo: "hunk" },
+        "base",
+        "head",
+        streamingController.signal,
+        {},
+        (async () => new Response(body)) as GitHubFetch,
+      ),
+    ).rejects.toThrow("diff loading was cancelled");
+
+    await expect(
+      fetchGitHubCompareDiff(
+        { owner: "modem-dev", repo: "hunk" },
+        "base",
+        "head",
+        signal(),
+        {},
+        (async () => {
+          throw new Error("network internals");
+        }) as GitHubFetch,
+      ),
+    ).rejects.toThrow("could not be reached");
   });
 });
 
