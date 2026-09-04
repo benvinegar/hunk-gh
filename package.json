@@ -11,14 +11,14 @@
     "pull-request",
     "terminal"
   ],
-  "homepage": "https://github.com/benvinegar/hunk-gh#readme",
+  "homepage": "https://github.com/modem-dev/hunk-gh#readme",
   "bugs": {
-    "url": "https://github.com/benvinegar/hunk-gh/issues"
+    "url": "https://github.com/modem-dev/hunk-gh/issues"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/benvinegar/hunk-gh.git"
+    "url": "git+https://github.com/modem-dev/hunk-gh.git"
   },
   "type": "module",
   "scripts": {

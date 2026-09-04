@@ -2,7 +2,7 @@
 
 Review GitHub pull requests and commits in [Hunk](https://hunk.dev) without leaving the terminal or installing the GitHub CLI.
 
-[![CI](https://github.com/benvinegar/hunk-gh/actions/workflows/ci.yml/badge.svg)](https://github.com/benvinegar/hunk-gh/actions/workflows/ci.yml)
+[![CI](https://github.com/modem-dev/hunk-gh/actions/workflows/ci.yml/badge.svg)](https://github.com/modem-dev/hunk-gh/actions/workflows/ci.yml)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ![hunk gh pr opening a GitHub pull request in Hunk](assets/hunk-gh.gif)
@@ -14,7 +14,7 @@ Review GitHub pull requests and commits in [Hunk](https://hunk.dev) without leav
 Hunk 0.21 or newer can install the extension directly from GitHub:
 
 ```bash
-hunk extension install benvinegar/hunk-gh
+hunk extension install modem-dev/hunk-gh
 ```
 
 New Hunk sessions load it automatically.
@@ -77,7 +77,7 @@ hunk extension remove hunk-gh
 Pin a release when you want updates to stay on a specific version:
 
 ```bash
-hunk extension install benvinegar/hunk-gh@v0.1.0
+hunk extension install modem-dev/hunk-gh@v0.1.0
 ```
 
 ## Develop
