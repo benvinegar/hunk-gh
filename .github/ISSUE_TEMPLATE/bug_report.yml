@@ -1,0 +1,48 @@
+name: Bug report
+description: Report incorrect hunk-gh behavior
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping improve hunk-gh. Do not include tokens or private source.
+  - type: input
+    id: version
+    attributes:
+      label: Versions
+      description: Output from `hunk --version` and the installed hunk-gh version.
+      placeholder: "Hunk 0.21.0; hunk-gh 0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and inputs
+      description: Include the command shape, but redact private repository names, source, and credentials.
+      placeholder: hunk gh compare main...feature --repo owner/repo
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include safe error output and reproduction steps.
+    validations:
+      required: true

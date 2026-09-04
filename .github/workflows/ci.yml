@@ -11,7 +11,12 @@ concurrency:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    name: Validate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
@@ -19,3 +24,21 @@ jobs:
           bun-version: 1.3.14
       - run: bun install --frozen-lockfile
       - run: bun run check
+
+  managed-install-smoke:
+    name: Managed install smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install released Hunk
+        run: bun add --global hunkdiff@0.21.0
+      - name: Install hunk-gh from GitHub
+        run: hunk extension install --yes modem-dev/hunk-gh
+      - name: Verify extension-owned help commands stay headless
+        run: |
+          hunk gh --help
+          hunk gh pr --help
+          hunk gh commit --help
+          hunk gh compare --help
