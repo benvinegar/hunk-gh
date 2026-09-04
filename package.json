@@ -1,0 +1,54 @@
+{
+  "name": "hunk-gh",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Review GitHub pull requests in Hunk from the command line.",
+  "keywords": [
+    "diff",
+    "github",
+    "hunk",
+    "hunk-extension",
+    "pull-request",
+    "terminal"
+  ],
+  "homepage": "https://github.com/benvinegar/hunk-gh#readme",
+  "bugs": {
+    "url": "https://github.com/benvinegar/hunk-gh/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/benvinegar/hunk-gh.git"
+  },
+  "type": "module",
+  "scripts": {
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "lint": "oxlint . --deny-warnings",
+    "lint:fix": "oxlint . --fix",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "bun run format:check && bun run lint && bun run typecheck && bun run test",
+    "prepare": "simple-git-hooks"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "hunkdiff": "^0.21.0-beta.1",
+    "oxfmt": "^0.63.0",
+    "oxlint": "^1.78.0",
+    "simple-git-hooks": "^2.13.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "bun run format:check && bun run lint"
+  },
+  "packageManager": "bun@1.3.14",
+  "hunk": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "apiVersion": 10
+  }
+}
