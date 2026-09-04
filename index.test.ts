@@ -12,8 +12,10 @@ import type {
 } from "hunkdiff/extension";
 import {
   createGitHubPrExtension,
+  fetchGitHubCommitDiff,
   fetchGitHubPullRequestDiff,
   type GitHubFetch,
+  parseGitHubCommitInvocation,
   parseGitHubPrInvocation,
   parseGitHubPullRequestLocator,
   parseGitHubRemoteRepository,
@@ -99,6 +101,26 @@ describe("GitHub PR invocation parsing", () => {
       "https://github.com/owner/repo/pull/1#discussion",
     ]) {
       expect(() => parseGitHubPullRequestLocator(locator)).toThrow();
+    }
+  });
+});
+
+describe("GitHub commit invocation parsing", () => {
+  test("accepts hexadecimal SHAs, repositories, and patch options", () => {
+    expect(
+      parseGitHubCommitInvocation(["ABCDEF1", "--repo", "modem-dev/hunk", "--", "--pager"]),
+    ).toEqual({
+      sha: "abcdef1",
+      explicitRepository: "modem-dev/hunk",
+      patchArgs: ["--pager"],
+      help: false,
+    });
+    expect(parseGitHubCommitInvocation(["--help"])).toMatchObject({ help: true });
+  });
+
+  test("rejects refs, malformed SHAs, and ambiguous arguments", () => {
+    for (const args of [[], ["main"], ["abcdef"], ["abcdefg"], ["abcdef1", "1234567"]]) {
+      expect(() => parseGitHubCommitInvocation(args)).toThrow();
     }
   });
 });
@@ -236,6 +258,25 @@ describe("GitHub diff fetching", () => {
   });
 });
 
+describe("GitHub commit fetching", () => {
+  test("requests the commit diff without following redirects", async () => {
+    let requestUrl = "";
+    const bytes = await fetchGitHubCommitDiff(
+      { owner: "modem-dev", repo: "hunk" },
+      "abcdef1",
+      new AbortController().signal,
+      {},
+      (async (url, init) => {
+        requestUrl = String(url);
+        expect(init?.redirect).toBe("manual");
+        return new Response("diff --git a/a b/a\n", { status: 200 });
+      }) as GitHubFetch,
+    );
+    expect(requestUrl).toBe("https://api.github.com/repos/modem-dev/hunk/commits/abcdef1");
+    expect(new TextDecoder().decode(bytes)).toContain("diff --git");
+  });
+});
+
 describe("GitHub PR extension lifecycle", () => {
   test("fetches, delegates to patch, and removes the temporary patch on shutdown", async () => {
     let command: ExtensionCliCommand | undefined;
@@ -266,7 +307,7 @@ describe("GitHub PR extension lifecycle", () => {
 
     expect(command).toEqual({
       name: "gh",
-      summary: "Review a GitHub pull request",
+      summary: "Review GitHub pull requests and commits",
       usage: "pr <number|owner/repo#number|pull-request-url> [--repo <owner/repo>]",
     });
     if (!handler || !shutdown) throw new Error("Expected command and shutdown registrations.");

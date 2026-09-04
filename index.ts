@@ -18,8 +18,10 @@ export const GITHUB_HELP = `Usage: hunk gh <command>
 GitHub commands:
   pr <pull-request> [--repo <owner/repo>] [-- <patch-options...>]
       Review a GitHub pull request without requiring the gh CLI.
+  commit <sha> [--repo <owner/repo>] [-- <patch-options...>]
+      Review a GitHub commit without requiring the gh CLI.
 
-Run \`hunk gh pr --help\` for pull-request forms.
+Run \`hunk gh <command> --help\` for command-specific help.
 `;
 
 export const GITHUB_PR_HELP = `Usage: hunk gh pr <pull-request> [--repo <owner/repo>] [-- <patch-options...>]
@@ -34,6 +36,14 @@ Pull request forms:
 
 Authentication:
   GH_TOKEN, then GITHUB_TOKEN           optional for public repositories
+`;
+
+export const GITHUB_COMMIT_HELP = `Usage: hunk gh commit <sha> [--repo <owner/repo>] [-- <patch-options...>]
+
+Review a GitHub commit without requiring the gh CLI.
+
+A 7–40 character hexadecimal commit SHA is required. The repository is inferred
+from the local origin unless --repo names it explicitly.
 `;
 
 export interface GitHubPullRequestLocator {
@@ -53,6 +63,13 @@ export interface ResolvedGitHubPullRequest {
   owner: string;
   repo: string;
   number: string;
+}
+
+export interface GitHubCommitInvocation {
+  sha: string;
+  explicitRepository?: string;
+  patchArgs: readonly string[];
+  help: boolean;
 }
 
 export type GitHubFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -212,6 +229,50 @@ export function parseGitHubPrInvocation(args: readonly string[]): GitHubPrInvoca
   };
 }
 
+/** Parse one commit SHA, optional repository, and delegated patch options. */
+export function parseGitHubCommitInvocation(args: readonly string[]): GitHubCommitInvocation {
+  const separator = args.indexOf("--");
+  const ownedArgs = separator < 0 ? args : args.slice(0, separator);
+  const patchArgs = separator < 0 ? [] : args.slice(separator + 1);
+  if (ownedArgs.includes("--help") || ownedArgs.includes("-h")) {
+    return { sha: "0000000", patchArgs: Object.freeze([...patchArgs]), help: true };
+  }
+
+  let sha: string | undefined;
+  let explicitRepository: string | undefined;
+  for (let index = 0; index < ownedArgs.length; index += 1) {
+    const token = ownedArgs[index]!;
+    if (token === "--repo") {
+      const value = ownedArgs[index + 1];
+      if (explicitRepository !== undefined || !value || value.startsWith("--")) {
+        throw invocationError("`--repo` requires one owner/repo value.");
+      }
+      explicitRepository = value;
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--repo=")) {
+      if (explicitRepository !== undefined) throw invocationError("Specify --repo only once.");
+      explicitRepository = token.slice("--repo=".length);
+      continue;
+    }
+    if (token.startsWith("-")) throw invocationError(`Unknown commit option: ${token}`);
+    if (sha !== undefined) throw invocationError("Specify exactly one commit SHA.");
+    sha = token;
+  }
+
+  if (!sha || !/^[0-9a-f]{7,40}$/i.test(sha)) {
+    throw invocationError(`Invalid commit SHA: ${sha ?? "missing"}`);
+  }
+  if (explicitRepository !== undefined) parseGitHubRepository(explicitRepository);
+  return {
+    sha: sha.toLowerCase(),
+    explicitRepository,
+    patchArgs: Object.freeze([...patchArgs]),
+    help: false,
+  };
+}
+
 /** Parse a github.com remote URL into its owner and repository. */
 export function parseGitHubRemoteRepository(value: string): { owner: string; repo: string } | null {
   const scp = /^(?:[^@\s]+@)?github\.com:([^/\s]+\/[^/\s]+)$/i.exec(value);
@@ -318,6 +379,24 @@ export async function resolveGitHubPullRequest(
     });
   }
   return { ...repository, number: invocation.locator.number };
+}
+
+/** Resolve an explicit repository or infer one from the local GitHub origin. */
+async function resolveGitHubRepository(
+  explicitRepository: string | undefined,
+  cwd: string,
+  signal: AbortSignal,
+  resolveOrigin: GitHubPrExtensionRuntime["resolveOrigin"],
+): Promise<{ owner: string; repo: string }> {
+  if (explicitRepository) return parseGitHubRepository(explicitRepository);
+  const origin = await resolveOrigin(cwd, signal);
+  const repository = parseGitHubRemoteRepository(origin);
+  if (!repository) {
+    throw new HunkExtensionUserError("The local origin is not a supported github.com repository.", {
+      suggestions: ["Pass `--repo owner/repo` explicitly."],
+    });
+  }
+  return repository;
 }
 
 /** Read a bounded response body so a remote server cannot exhaust process memory. */
@@ -457,9 +536,50 @@ export async function fetchGitHubPullRequestDiff(
   return readBoundedResponse(response, signal);
 }
 
+/** Fetch one GitHub commit diff without invoking the gh CLI. */
+export async function fetchGitHubCommitDiff(
+  repository: { owner: string; repo: string },
+  sha: string,
+  signal: AbortSignal,
+  env: NodeJS.ProcessEnv = process.env,
+  fetchImpl: GitHubFetch = fetch,
+): Promise<Uint8Array> {
+  const token = env.GH_TOKEN || env.GITHUB_TOKEN;
+  const headers = new Headers({
+    Accept: "application/vnd.github.v3.diff",
+    "User-Agent": "hunk-gh-extension",
+    "X-GitHub-Api-Version": "2022-11-28",
+  });
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const name = `${repository.owner}/${repository.repo}@${sha}`;
+  let response: Response;
+  try {
+    response = await fetchImpl(
+      `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}/commits/${sha}`,
+      { headers, redirect: "manual", signal },
+    );
+  } catch {
+    if (signal.aborted) throw new HunkExtensionUserError("GitHub commit loading was cancelled.");
+    throw new HunkExtensionUserError("GitHub could not be reached while loading the commit.");
+  }
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new HunkExtensionUserError(`GitHub could not find an accessible commit at ${name}.`);
+    }
+    if (response.status >= 300 && response.status < 400) {
+      throw new HunkExtensionUserError(
+        "GitHub redirected the commit request; refusing to forward credentials.",
+      );
+    }
+    throw new HunkExtensionUserError(`GitHub returned HTTP ${response.status} for ${name}.`);
+  }
+  return readBoundedResponse(response, signal);
+}
+
 /** Create a temporary patch with restrictive POSIX modes and retain it until shutdown. */
 async function writeTemporaryPatch(
-  target: ResolvedGitHubPullRequest,
+  filename: string,
   bytes: Uint8Array,
   temporaryRoot: string,
   retainedDirectories: Set<string>,
@@ -468,8 +588,7 @@ async function writeTemporaryPatch(
   retainedDirectories.add(directory);
   try {
     await chmod(directory, 0o700);
-    const safeRepo = target.repo.replace(/[^A-Za-z0-9_.-]/g, "-");
-    const patchPath = join(directory, `${safeRepo}-pr-${target.number}.diff`);
+    const patchPath = join(directory, filename.replace(/[^A-Za-z0-9_.-]/g, "-"));
     await writeFile(patchPath, bytes, { flag: "wx", mode: 0o600 });
     return patchPath;
   } catch (error) {
@@ -500,38 +619,62 @@ export function createGitHubPrExtension(
         await ctx.stdout.write(GITHUB_HELP);
         return { kind: "exit" };
       }
-      if (args[0] !== "pr") {
+      let diff: Uint8Array;
+      let patchFilename: string;
+      let patchArgs: readonly string[];
+      if (args[0] === "pr") {
+        const invocation = parseGitHubPrInvocation(args.slice(1));
+        if (invocation.help) {
+          await ctx.stdout.write(GITHUB_PR_HELP);
+          return { kind: "exit" };
+        }
+        const target = await resolveGitHubPullRequest(
+          invocation,
+          ctx.cwd,
+          ctx.signal,
+          runtime.resolveOrigin,
+        );
+        await ctx.stderr.write(
+          `Fetching GitHub pull request ${target.owner}/${target.repo}#${target.number}…\n`,
+        );
+        diff = await fetchGitHubPullRequestDiff(target, ctx.signal, runtime.env, runtime.fetchImpl);
+        patchFilename = `${target.repo}-pr-${target.number}.diff`;
+        patchArgs = invocation.patchArgs;
+      } else if (args[0] === "commit") {
+        const invocation = parseGitHubCommitInvocation(args.slice(1));
+        if (invocation.help) {
+          await ctx.stdout.write(GITHUB_COMMIT_HELP);
+          return { kind: "exit" };
+        }
+        const repository = await resolveGitHubRepository(
+          invocation.explicitRepository,
+          ctx.cwd,
+          ctx.signal,
+          runtime.resolveOrigin,
+        );
+        await ctx.stderr.write(
+          `Fetching GitHub commit ${repository.owner}/${repository.repo}@${invocation.sha}…\n`,
+        );
+        diff = await fetchGitHubCommitDiff(
+          repository,
+          invocation.sha,
+          ctx.signal,
+          runtime.env,
+          runtime.fetchImpl,
+        );
+        patchFilename = `${repository.repo}-commit-${invocation.sha}.diff`;
+        patchArgs = invocation.patchArgs;
+      } else {
         throw new HunkExtensionUserError(`Unknown GitHub command: ${args[0]}`, {
           suggestions: ["Run `hunk gh --help` to list available commands."],
         });
       }
 
-      const invocation = parseGitHubPrInvocation(args.slice(1));
-      if (invocation.help) {
-        await ctx.stdout.write(GITHUB_PR_HELP);
-        return { kind: "exit" };
-      }
-
-      const target = await resolveGitHubPullRequest(
-        invocation,
-        ctx.cwd,
-        ctx.signal,
-        runtime.resolveOrigin,
-      );
-      await ctx.stderr.write(
-        `Fetching GitHub pull request ${target.owner}/${target.repo}#${target.number}…\n`,
-      );
-      const diff = await fetchGitHubPullRequestDiff(
-        target,
-        ctx.signal,
-        runtime.env,
-        runtime.fetchImpl,
-      );
       if (ctx.signal.aborted) {
-        throw new HunkExtensionUserError("GitHub pull-request loading was cancelled.");
+        throw new HunkExtensionUserError("GitHub diff loading was cancelled.");
       }
       const patchPath = await writeTemporaryPatch(
-        target,
+        patchFilename,
         diff,
         runtime.temporaryRoot,
         retainedDirectories,
@@ -550,13 +693,13 @@ export function createGitHubPrExtension(
         await discardPatch();
         throw new HunkExtensionUserError("GitHub pull-request loading was cancelled.");
       }
-      return { kind: "delegate", argv: ["patch", patchPath, ...invocation.patchArgs] };
+      return { kind: "delegate", argv: ["patch", patchPath, ...patchArgs] };
     };
 
     hunk.registerCliCommand(
       {
         name: "gh",
-        summary: "Review a GitHub pull request",
+        summary: "Review GitHub pull requests and commits",
         usage: "pr <number|owner/repo#number|pull-request-url> [--repo <owner/repo>]",
       },
       handler,

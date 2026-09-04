@@ -1,6 +1,6 @@
 # hunk-gh
 
-Review GitHub pull requests in [Hunk](https://hunk.dev) without leaving the terminal or installing the GitHub CLI.
+Review GitHub pull requests and commits in [Hunk](https://hunk.dev) without leaving the terminal or installing the GitHub CLI.
 
 [![CI](https://github.com/benvinegar/hunk-gh/actions/workflows/ci.yml/badge.svg)](https://github.com/benvinegar/hunk-gh/actions/workflows/ci.yml)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -35,10 +35,20 @@ hunk gh pr 'modem-dev/hunk#123'
 hunk gh pr https://github.com/modem-dev/hunk/pull/123
 ```
 
-Quote the `owner/repo#number` form because some shells treat `#` as a comment. Pass Hunk patch options after `--`:
+Quote the `owner/repo#number` form because some shells treat `#` as a comment.
+
+Review a commit by its 7–40 character hexadecimal SHA:
+
+```bash
+hunk gh commit a1b2c3d
+hunk gh commit a1b2c3d --repo modem-dev/hunk
+```
+
+Pass Hunk patch options after `--` for either command:
 
 ```bash
 hunk gh pr 123 -- --mode stack
+hunk gh commit a1b2c3d -- --mode stack
 ```
 
 Run `hunk gh --help` or `hunk gh pr --help` for command help.
@@ -51,7 +61,7 @@ The token must have access to the target repository and may require organization
 
 ## How it works
 
-hunk-gh fetches the PR diff directly from GitHub's API, writes a temporary patch, and delegates to Hunk's built-in `patch` command. It does not require the `gh` CLI and has no runtime dependencies.
+hunk-gh fetches the PR or commit diff directly from GitHub's API, writes a temporary patch, and delegates to Hunk's built-in `patch` command. It does not require the `gh` CLI and has no runtime dependencies.
 
 Fetched diffs are limited to 64 MiB. On POSIX systems, temporary directories use mode `0700` and patches use mode `0600`; Windows inherits the ACL of the system temporary directory. Patches remain available for review reloads and are removed when the extension shuts down.
 
