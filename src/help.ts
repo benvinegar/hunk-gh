@@ -1,8 +1,8 @@
 export const GITHUB_HELP = `Usage: hunk gh <command>
 
 GitHub commands:
-  pr <pull-request> [--repo <owner/repo>] [-- <patch-options...>]
-      Review a GitHub pull request without requiring the gh CLI.
+  pr [pull-request] [--repo <owner/repo>] [-- <patch-options...>]
+      Review a GitHub pull request; infer it from the current branch when omitted.
   commit <commit> [--repo <owner/repo>] [-- <patch-options...>]
       Review a GitHub commit without requiring the gh CLI.
   compare <base>...<head> [--repo <owner/repo>] [-- <patch-options...>]
@@ -11,11 +11,12 @@ GitHub commands:
 Run \`hunk gh <command> --help\` for command-specific help.
 `;
 
-export const GITHUB_PR_HELP = `Usage: hunk gh pr <pull-request> [--repo <owner/repo>] [-- <patch-options...>]
+export const GITHUB_PR_HELP = `Usage: hunk gh pr [pull-request] [--repo <owner/repo>] [-- <patch-options...>]
 
 Review a GitHub pull request without requiring the gh CLI.
 
 Pull request forms:
+  (omitted)                            find the open PR for the current branch
   123                                  infer owner/repo from the local origin
   123 --repo modem-dev/hunk            use an explicit repository
   'modem-dev/hunk#123'                 name the repository and pull request

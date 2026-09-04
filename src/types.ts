@@ -10,7 +10,7 @@ export interface GitHubPullRequestLocator {
 }
 
 export interface GitHubPrInvocation {
-  locator: GitHubPullRequestLocator;
+  locator?: GitHubPullRequestLocator;
   explicitRepository?: string;
   patchArgs: readonly string[];
   help: boolean;
@@ -18,6 +18,11 @@ export interface GitHubPrInvocation {
 
 export interface ResolvedGitHubPullRequest extends GitHubRepository {
   number: string;
+}
+
+export interface GitCheckoutIdentity {
+  branch: string;
+  sha: string;
 }
 
 export interface GitHubCommitLocator {
@@ -47,6 +52,7 @@ export interface GitHubExtensionRuntime {
   fetchImpl: GitHubFetch;
   env: NodeJS.ProcessEnv;
   resolveOrigin(cwd: string, signal: AbortSignal): Promise<string>;
+  resolveCheckout(cwd: string, signal: AbortSignal): Promise<GitCheckoutIdentity>;
   temporaryRoot: string;
 }
 

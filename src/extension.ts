@@ -8,6 +8,7 @@ import {
   fetchGitHubCommitDiff,
   fetchGitHubCompareDiff,
   fetchGitHubPullRequestDiff,
+  findOpenPullRequestForCommit,
 } from "./github";
 import { GITHUB_COMMIT_HELP, GITHUB_COMPARE_HELP, GITHUB_HELP, GITHUB_PR_HELP } from "./help";
 import {
@@ -15,7 +16,12 @@ import {
   parseGitHubCompareInvocation,
   parseGitHubPrInvocation,
 } from "./parsing";
-import { readGitOrigin, resolveGitHubPullRequest, resolveGitHubRepository } from "./repository";
+import {
+  readGitCheckout,
+  readGitOrigin,
+  resolveGitHubPullRequest,
+  resolveGitHubRepository,
+} from "./repository";
 import { TemporaryPatchStore } from "./temporaryPatch";
 import type { GitHubExtensionRuntime } from "./types";
 
@@ -33,12 +39,25 @@ async function preparePullRequest(
 ): Promise<PreparedDiff | typeof GITHUB_PR_HELP> {
   const invocation = parseGitHubPrInvocation(args);
   if (invocation.help) return GITHUB_PR_HELP;
-  const target = await resolveGitHubPullRequest(
-    invocation,
-    ctx.cwd,
-    ctx.signal,
-    runtime.resolveOrigin,
-  );
+  const target = invocation.locator
+    ? await resolveGitHubPullRequest(invocation, ctx.cwd, ctx.signal, runtime.resolveOrigin)
+    : await (async () => {
+        const originRepository = await resolveGitHubRepository(
+          invocation.explicitRepository,
+          ctx.cwd,
+          ctx.signal,
+          runtime.resolveOrigin,
+        );
+        const checkout = await runtime.resolveCheckout(ctx.cwd, ctx.signal);
+        return findOpenPullRequestForCommit(
+          originRepository,
+          checkout.branch,
+          checkout.sha,
+          ctx.signal,
+          runtime.env,
+          runtime.fetchImpl,
+        );
+      })();
   await ctx.stderr.write(
     `Fetching GitHub pull request ${target.owner}/${target.repo}#${target.number}…\n`,
   );
@@ -121,6 +140,7 @@ export function createGitHubPrExtension(
     fetchImpl: overrides.fetchImpl ?? fetch,
     env: overrides.env ?? process.env,
     resolveOrigin: overrides.resolveOrigin ?? readGitOrigin,
+    resolveCheckout: overrides.resolveCheckout ?? readGitCheckout,
     temporaryRoot: overrides.temporaryRoot ?? tmpdir(),
   };
   const patches = new TemporaryPatchStore(runtime.temporaryRoot);

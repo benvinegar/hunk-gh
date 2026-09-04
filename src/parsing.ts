@@ -105,7 +105,7 @@ export function parseGitHubPrInvocation(args: readonly string[]): GitHubPrInvoca
   const ownedArgs = separator < 0 ? args : args.slice(0, separator);
   const patchArgs = separator < 0 ? [] : args.slice(separator + 1);
   if (ownedArgs.includes("--help") || ownedArgs.includes("-h")) {
-    return { locator: { number: "1" }, patchArgs: Object.freeze([...patchArgs]), help: true };
+    return { patchArgs: Object.freeze([...patchArgs]), help: true };
   }
 
   let target: string | undefined;
@@ -133,11 +133,10 @@ export function parseGitHubPrInvocation(args: readonly string[]): GitHubPrInvoca
     target = token;
   }
 
-  if (!target) throw invocationError("Specify one GitHub pull request.");
-  const locator = parseGitHubPullRequestLocator(target);
+  const locator = target ? parseGitHubPullRequestLocator(target) : undefined;
   if (explicitRepository !== undefined) {
     parseGitHubRepository(explicitRepository);
-    if (locator.owner || locator.repo) {
+    if (locator?.owner || locator?.repo) {
       throw invocationError(
         "Do not combine --repo with a locator that already names a repository.",
       );

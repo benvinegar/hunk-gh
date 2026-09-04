@@ -1,12 +1,19 @@
 import { execFile } from "node:child_process";
 import { HunkExtensionUserError } from "hunkdiff/extension";
+import { hasControlCharacter } from "./errors";
 import { parseGitHubRepository } from "./parsing";
 import type {
+  GitCheckoutIdentity,
   GitHubExtensionRuntime,
   GitHubPrInvocation,
   GitHubRepository,
   ResolvedGitHubPullRequest,
 } from "./types";
+
+interface GitProcessError extends Error {
+  code?: string | number | null;
+  killed?: boolean;
+}
 
 /** Parses a github.com remote URL into its owner and repository. */
 export function parseGitHubRemoteRepository(value: string): GitHubRepository | null {
@@ -41,14 +48,12 @@ export function parseGitHubRemoteRepository(value: string): GitHubRepository | n
   }
 }
 
-/** Reads origin without a shell so repository paths never become executable syntax. */
-export async function readGitOrigin(cwd: string, signal: AbortSignal): Promise<string> {
-  if (signal.aborted)
-    throw new HunkExtensionUserError("GitHub pull-request loading was cancelled.");
+/** Runs one bounded Git query without passing user input through a shell. */
+function executeGit(cwd: string, args: readonly string[], signal: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       "git",
-      ["remote", "get-url", "origin"],
+      [...args],
       {
         cwd,
         encoding: "utf8",
@@ -57,27 +62,99 @@ export async function readGitOrigin(cwd: string, signal: AbortSignal): Promise<s
         timeout: 5_000,
         windowsHide: true,
       },
-      (error, stdout) => {
-        if (signal.aborted) {
-          reject(new HunkExtensionUserError("GitHub pull-request loading was cancelled."));
-          return;
-        }
-        if (error || !stdout.trim()) {
-          const unavailable = (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
-          reject(
-            new HunkExtensionUserError(
-              unavailable
-                ? "Git is unavailable for local origin inference."
-                : "The current directory has no small, readable Git origin.",
-              { suggestions: ["Pass `--repo owner/repo` or use an owner/repo#number locator."] },
-            ),
-          );
-          return;
-        }
-        resolve(stdout.trim());
-      },
+      (error, stdout) => (error ? reject(error) : resolve(stdout.trim())),
     );
   });
+}
+
+/** Classifies Git process failures without exposing subprocess internals. */
+export function classifyGitLookupFailure(
+  error: unknown,
+  subject: "origin" | "branch" | "HEAD",
+): HunkExtensionUserError {
+  const processError = error as GitProcessError | null;
+  if (processError?.code === "ENOENT") {
+    return new HunkExtensionUserError(`Git is unavailable while reading the current ${subject}.`);
+  }
+  if (processError?.killed || processError?.code === "ETIMEDOUT") {
+    return new HunkExtensionUserError(`Git timed out while reading the current ${subject}.`);
+  }
+  return new HunkExtensionUserError(`Git failed while reading the current ${subject}.`);
+}
+
+/** Reads origin without a shell so repository paths never become executable syntax. */
+export async function readGitOrigin(cwd: string, signal: AbortSignal): Promise<string> {
+  if (signal.aborted)
+    throw new HunkExtensionUserError("GitHub pull-request loading was cancelled.");
+  try {
+    const origin = await executeGit(cwd, ["remote", "get-url", "origin"], signal);
+    if (!origin) throw new Error("empty origin");
+    return origin;
+  } catch (error) {
+    if (signal.aborted)
+      throw new HunkExtensionUserError("GitHub pull-request loading was cancelled.");
+    const processError = error as GitProcessError | null;
+    if (processError?.code === "ENOENT") throw classifyGitLookupFailure(error, "origin");
+    throw new HunkExtensionUserError("The current checkout has no readable Git origin.", {
+      suggestions: ["Pass `--repo owner/repo` or use an owner/repo#number locator."],
+    });
+  }
+}
+
+/** Reads the current branch without a shell and rejects detached HEAD. */
+export async function readGitBranch(cwd: string, signal: AbortSignal): Promise<string> {
+  if (signal.aborted) throw new HunkExtensionUserError("GitHub PR discovery was cancelled.");
+  try {
+    const branch = await executeGit(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"], signal);
+    if (!branch) throw new Error("empty branch");
+    if (hasControlCharacter(branch)) {
+      throw new HunkExtensionUserError(
+        "The current Git branch contains terminal control characters and cannot be used for PR discovery.",
+      );
+    }
+    return branch;
+  } catch (error) {
+    if (signal.aborted) throw new HunkExtensionUserError("GitHub PR discovery was cancelled.");
+    if (error instanceof HunkExtensionUserError) throw error;
+    const processError = error as GitProcessError | null;
+    if (processError?.code === "ENOENT") throw classifyGitLookupFailure(error, "branch");
+    if (processError?.code === 1) {
+      throw new HunkExtensionUserError(
+        "The current checkout has a detached HEAD, so its pull request cannot be inferred.",
+        {
+          suggestions: [
+            "Check out a branch or pass a pull-request number, owner/repo#number, or URL.",
+          ],
+        },
+      );
+    }
+    throw classifyGitLookupFailure(error, "branch");
+  }
+}
+
+/** Reads the exact current commit without accepting an ambiguous revision. */
+export async function readGitHeadSha(cwd: string, signal: AbortSignal): Promise<string> {
+  if (signal.aborted) throw new HunkExtensionUserError("GitHub PR discovery was cancelled.");
+  try {
+    const sha = await executeGit(cwd, ["rev-parse", "--verify", "HEAD"], signal);
+    if (!/^[0-9a-f]{40,64}$/i.test(sha)) throw new Error("invalid HEAD");
+    return sha.toLowerCase();
+  } catch (error) {
+    if (signal.aborted) throw new HunkExtensionUserError("GitHub PR discovery was cancelled.");
+    const processError = error as GitProcessError | null;
+    if (processError?.code === "ENOENT") throw classifyGitLookupFailure(error, "HEAD");
+    throw classifyGitLookupFailure(error, "HEAD");
+  }
+}
+
+/** Reads the branch label and exact HEAD needed for fork-aware PR discovery. */
+export async function readGitCheckout(
+  cwd: string,
+  signal: AbortSignal,
+): Promise<GitCheckoutIdentity> {
+  const branch = await readGitBranch(cwd, signal);
+  const sha = await readGitHeadSha(cwd, signal);
+  return { branch, sha };
 }
 
 /** Resolves an explicit repository or infers one from the local GitHub origin. */
@@ -104,6 +181,9 @@ export async function resolveGitHubPullRequest(
   signal: AbortSignal,
   resolveOrigin: GitHubExtensionRuntime["resolveOrigin"] = readGitOrigin,
 ): Promise<ResolvedGitHubPullRequest> {
+  if (!invocation.locator) {
+    throw new HunkExtensionUserError("A pull-request locator is required for direct resolution.");
+  }
   if (invocation.locator.owner && invocation.locator.repo) {
     return {
       owner: invocation.locator.owner,

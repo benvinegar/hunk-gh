@@ -3,10 +3,206 @@ import {
   fetchGitHubCommitDiff,
   fetchGitHubCompareDiff,
   fetchGitHubPullRequestDiff,
+  findOpenPullRequestForCommit,
 } from "./github";
 import type { GitHubFetch } from "./types";
 
 const signal = () => new AbortController().signal;
+
+describe("GitHub pull-request discovery", () => {
+  const repository = { owner: "contributor", repo: "hunk" };
+  const sha = "a".repeat(40);
+
+  test("queries the exact fork commit and returns the open PR's base repository", async () => {
+    let requested = "";
+    let requestInit: RequestInit | undefined;
+    await expect(
+      findOpenPullRequestForCommit(repository, "feature/topic", sha, signal(), {}, (async (
+        url,
+        init,
+      ) => {
+        requested = String(url);
+        requestInit = init;
+        return new Response(
+          JSON.stringify([
+            {
+              number: 123,
+              state: "open",
+              base: { repo: { full_name: "modem-dev/hunk" } },
+            },
+          ]),
+        );
+      }) as GitHubFetch),
+    ).resolves.toEqual({ owner: "modem-dev", repo: "hunk", number: "123" });
+    const url = new URL(requested);
+    expect(`${url.origin}${url.pathname}`).toBe(
+      `https://api.github.com/repos/contributor/hunk/commits/${sha}/pulls`,
+    );
+    expect(url.searchParams.get("per_page")).toBe("100");
+    expect(requestInit?.redirect).toBe("manual");
+    expect(new Headers(requestInit?.headers).get("accept")).toBe("application/vnd.github+json");
+  });
+
+  test("filters closed PRs and preserves exact-one open semantics", async () => {
+    const entry = (number: number, state: "open" | "closed") => ({
+      number,
+      state,
+      base: { repo: { full_name: "modem-dev/hunk" } },
+    });
+    await expect(
+      findOpenPullRequestForCommit(
+        repository,
+        "one",
+        sha,
+        signal(),
+        {},
+        (async () =>
+          new Response(
+            JSON.stringify([
+              { number: 9, state: "closed", base: { repo: null } },
+              entry(1, "open"),
+            ]),
+          )) as GitHubFetch,
+      ),
+    ).resolves.toEqual({ owner: "modem-dev", repo: "hunk", number: "1" });
+    await expect(
+      findOpenPullRequestForCommit(
+        repository,
+        "none",
+        sha,
+        signal(),
+        {},
+        (async () => new Response(JSON.stringify([entry(1, "closed")]))) as GitHubFetch,
+      ),
+    ).rejects.toThrow("No accessible open pull request");
+    await expect(
+      findOpenPullRequestForCommit(
+        repository,
+        "many",
+        sha,
+        signal(),
+        {},
+        (async () =>
+          new Response(JSON.stringify([entry(1, "open"), entry(2, "open")]))) as GitHubFetch,
+      ),
+    ).rejects.toThrow("Multiple accessible open pull requests");
+    await expect(
+      findOpenPullRequestForCommit(
+        repository,
+        "paged",
+        sha,
+        signal(),
+        {},
+        (async () =>
+          new Response(JSON.stringify([entry(1, "open")]), {
+            headers: { link: '<https://api.github.com/next>; rel="next"' },
+          })) as GitHubFetch,
+      ),
+    ).rejects.toThrow("paginated PR matches");
+  });
+
+  test("rejects malformed and oversized metadata", async () => {
+    await expect(
+      findOpenPullRequestForCommit(repository, "topic", "not-a-sha", signal()),
+    ).rejects.toThrow("valid commit SHA");
+    for (const body of [
+      "not json",
+      "{}",
+      '[{"number":1,"state":"open"}]',
+      '[{"number":"1","state":"open","base":{"repo":{"full_name":"modem-dev/hunk"}}}]',
+      '[{"number":1,"state":"unknown","base":{"repo":{"full_name":"modem-dev/hunk"}}}]',
+      '[{"number":1,"state":"open","base":{"repo":{"full_name":"invalid"}}}]',
+    ]) {
+      await expect(
+        findOpenPullRequestForCommit(
+          repository,
+          "topic",
+          sha,
+          signal(),
+          {},
+          (async () => new Response(body)) as GitHubFetch,
+        ),
+      ).rejects.toThrow("malformed PR metadata");
+    }
+    await expect(
+      findOpenPullRequestForCommit(
+        repository,
+        "topic",
+        sha,
+        signal(),
+        {},
+        (async () =>
+          new Response("[]", {
+            headers: { "content-length": String(1024 * 1024 + 1) },
+          })) as GitHubFetch,
+      ),
+    ).rejects.toThrow("1 MiB");
+
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(1024 * 1024));
+        controller.enqueue(new Uint8Array(1));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    await expect(
+      findOpenPullRequestForCommit(
+        repository,
+        "topic",
+        sha,
+        signal(),
+        {},
+        (async () => new Response(body)) as GitHubFetch,
+      ),
+    ).rejects.toThrow("1 MiB");
+    expect(cancelled).toBe(true);
+  });
+
+  test("uses credential-safe API, auth, rate-limit, redirect, and cancellation errors", async () => {
+    for (const [response, message] of [
+      [new Response("secret", { status: 401 }), "rejected the configured token"],
+      [
+        new Response("secret", {
+          status: 403,
+          headers: { "x-ratelimit-remaining": "0" },
+        }),
+        "rate limiting",
+      ],
+      [new Response("secret", { status: 403 }), "denied PR discovery"],
+      [new Response("secret", { status: 404 }), "accessible commit"],
+      [new Response(null, { status: 302 }), "refusing to forward credentials"],
+      [new Response("secret", { status: 500 }), "HTTP 500"],
+    ] as const) {
+      try {
+        await findOpenPullRequestForCommit(
+          repository,
+          "topic",
+          sha,
+          signal(),
+          { GH_TOKEN: "top-secret" },
+          (async () => response) as GitHubFetch,
+        );
+        throw new Error("Expected discovery failure.");
+      } catch (error) {
+        const text = error instanceof Error ? error.message : String(error);
+        expect(text).toContain(message);
+        expect(text).not.toContain("top-secret");
+        expect(text).not.toContain("secret");
+      }
+    }
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      findOpenPullRequestForCommit(repository, "topic", sha, controller.signal, {}, (async () => {
+        throw new Error("abort internals");
+      }) as GitHubFetch),
+    ).rejects.toThrow("cancelled");
+  });
+});
 
 describe("GitHub pull-request fetching", () => {
   test("sends the exact diff request with GH_TOKEN precedence", async () => {

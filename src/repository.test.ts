@@ -1,7 +1,15 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { parseGitHubPrInvocation } from "./parsing";
 import {
+  classifyGitLookupFailure,
   parseGitHubRemoteRepository,
+  readGitBranch,
+  readGitCheckout,
+  readGitHeadSha,
   readGitOrigin,
   resolveGitHubPullRequest,
   resolveGitHubRepository,
@@ -34,6 +42,83 @@ describe("GitHub repository resolution", () => {
     const controller = new AbortController();
     controller.abort();
     await expect(readGitOrigin(process.cwd(), controller.signal)).rejects.toThrow("cancelled");
+  });
+
+  test("reads a branch and reports detached HEAD clearly", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "hunk-gh-branch-test-"));
+    try {
+      execFileSync("git", ["init", "-b", "topic"], { cwd: directory });
+      expect(await readGitBranch(directory, new AbortController().signal)).toBe("topic");
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: directory });
+      execFileSync("git", ["config", "user.name", "Test"], { cwd: directory });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: directory });
+      execFileSync("git", ["checkout", "--detach"], { cwd: directory });
+      await expect(readGitBranch(directory, new AbortController().signal)).rejects.toThrow(
+        "detached HEAD",
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects branch names containing terminal control characters", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "hunk-gh-hostile-branch-test-"));
+    try {
+      execFileSync("git", ["init", "-b", "safe"], { cwd: directory });
+      execFileSync("git", ["symbolic-ref", "HEAD", "refs/heads/topic\u009bcontrol"], {
+        cwd: directory,
+      });
+      await expect(readGitBranch(directory, new AbortController().signal)).rejects.toThrow(
+        "terminal control characters",
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("reads the current branch and exact HEAD together", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "hunk-gh-checkout-test-"));
+    try {
+      execFileSync("git", ["init", "-b", "topic"], { cwd: directory });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: directory });
+      execFileSync("git", ["config", "user.name", "Test"], { cwd: directory });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: directory });
+      const sha = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: directory,
+        encoding: "utf8",
+      }).trim();
+      await expect(readGitHeadSha(directory, new AbortController().signal)).resolves.toBe(sha);
+      await expect(readGitCheckout(directory, new AbortController().signal)).resolves.toEqual({
+        branch: "topic",
+        sha,
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("distinguishes missing Git, cancellation, and other lookup failures", async () => {
+    expect(classifyGitLookupFailure({ code: "ENOENT" }, "branch").message).toContain(
+      "Git is unavailable",
+    );
+    expect(classifyGitLookupFailure({ killed: true }, "HEAD").message).toContain("timed out");
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(readGitBranch(process.cwd(), controller.signal)).rejects.toThrow("cancelled");
+    await expect(readGitHeadSha(process.cwd(), controller.signal)).rejects.toThrow("cancelled");
+
+    const directory = mkdtempSync(join(tmpdir(), "hunk-gh-not-repo-test-"));
+    try {
+      await expect(readGitBranch(directory, new AbortController().signal)).rejects.toThrow(
+        "Git failed while reading the current branch",
+      );
+      await expect(readGitHeadSha(directory, new AbortController().signal)).rejects.toThrow(
+        "Git failed while reading the current HEAD",
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test("uses the injected origin only when a PR does not name a repository", async () => {

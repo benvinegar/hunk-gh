@@ -1,13 +1,19 @@
 import { HunkExtensionUserError } from "hunkdiff/extension";
+import { parseGitHubRepository } from "./parsing";
 import type { GitHubFetch, GitHubRepository, ResolvedGitHubPullRequest } from "./types";
 
 const GITHUB_API_ORIGIN = "https://api.github.com";
 const MAX_DIFF_BYTES = 64 * 1024 * 1024;
+const MAX_METADATA_BYTES = 1024 * 1024;
 
-/** Builds credential-safe GitHub diff request headers. */
-function githubDiffHeaders(env: NodeJS.ProcessEnv, userAgent: string): Headers {
+/** Builds credential-safe GitHub request headers. */
+function githubHeaders(
+  env: NodeJS.ProcessEnv,
+  userAgent: string,
+  accept = "application/vnd.github.v3.diff",
+): Headers {
   const headers = new Headers({
-    Accept: "application/vnd.github.v3.diff",
+    Accept: accept,
     "User-Agent": userAgent,
     "X-GitHub-Api-Version": "2022-11-28",
   });
@@ -115,6 +121,163 @@ function pullRequestResponseError(response: Response, target: ResolvedGitHubPull
   return new HunkExtensionUserError(`GitHub returned HTTP ${response.status} for ${name}.`);
 }
 
+/** Reads a bounded metadata response and rejects malformed payloads. */
+async function readPullRequestMetadata(response: Response, signal: AbortSignal): Promise<unknown> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_METADATA_BYTES) {
+    throw new HunkExtensionUserError("GitHub PR metadata exceeds the 1 MiB safety limit.");
+  }
+  if (!response.body) throw new HunkExtensionUserError("GitHub returned empty PR metadata.");
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      if (signal.aborted) throw new HunkExtensionUserError("GitHub PR discovery was cancelled.");
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > MAX_METADATA_BYTES) {
+        await reader.cancel();
+        throw new HunkExtensionUserError("GitHub PR metadata exceeds the 1 MiB safety limit.");
+      }
+      chunks.push(next.value);
+    }
+  } catch (error) {
+    if (signal.aborted) throw new HunkExtensionUserError("GitHub PR discovery was cancelled.");
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    throw new HunkExtensionUserError("GitHub returned malformed PR metadata.");
+  }
+}
+
+/** Finds exactly one accessible open PR associated with the current fork commit. */
+export async function findOpenPullRequestForCommit(
+  originRepository: GitHubRepository,
+  branch: string,
+  sha: string,
+  signal: AbortSignal,
+  env: NodeJS.ProcessEnv = process.env,
+  fetchImpl: GitHubFetch = fetch,
+): Promise<ResolvedGitHubPullRequest> {
+  if (!/^[0-9a-f]{40,64}$/i.test(sha)) {
+    throw new HunkExtensionUserError("The current Git HEAD is not a valid commit SHA.");
+  }
+  const name = `${originRepository.owner}/${originRepository.repo}:${branch}@${sha.slice(0, 12)}`;
+  const url = new URL(
+    `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(originRepository.owner)}/${encodeURIComponent(originRepository.repo)}/commits/${sha}/pulls`,
+  );
+  url.searchParams.set("per_page", "100");
+
+  let response: Response;
+  try {
+    response = await fetchImpl(url, {
+      headers: githubHeaders(env, "hunk-gh-extension", "application/vnd.github+json"),
+      redirect: "manual",
+      signal,
+    });
+  } catch (error) {
+    if (error instanceof HunkExtensionUserError) throw error;
+    if (signal.aborted) throw new HunkExtensionUserError("GitHub PR discovery was cancelled.");
+    throw new HunkExtensionUserError(
+      "GitHub could not be reached while discovering a pull request.",
+    );
+  }
+  if (!response.ok) {
+    if (response.status === 401) {
+      throw new HunkExtensionUserError(`GitHub rejected the configured token for ${name}.`);
+    }
+    if (response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0") {
+      throw new HunkExtensionUserError(
+        `GitHub API rate limiting blocked PR discovery for ${name}.`,
+      );
+    }
+    if (response.status === 403) {
+      throw new HunkExtensionUserError(`GitHub denied PR discovery for ${name}.`);
+    }
+    if (response.status === 404) {
+      throw new HunkExtensionUserError(
+        `GitHub could not find an accessible commit at ${originRepository.owner}/${originRepository.repo}@${sha}.`,
+      );
+    }
+    if (response.status >= 300 && response.status < 400) {
+      throw new HunkExtensionUserError(
+        "GitHub redirected the PR discovery request; refusing to forward credentials.",
+      );
+    }
+    throw new HunkExtensionUserError(
+      `GitHub returned HTTP ${response.status} during PR discovery for ${name}.`,
+    );
+  }
+
+  const payload = await readPullRequestMetadata(response, signal);
+  if (!Array.isArray(payload)) {
+    throw new HunkExtensionUserError("GitHub returned malformed PR metadata.");
+  }
+  const open: ResolvedGitHubPullRequest[] = [];
+  for (const entry of payload) {
+    if (typeof entry !== "object" || entry === null) {
+      throw new HunkExtensionUserError("GitHub returned malformed PR metadata.");
+    }
+    const value = entry as {
+      number?: unknown;
+      state?: unknown;
+      base?: { repo?: { full_name?: unknown } | null } | null;
+    };
+    if (
+      typeof value.number !== "number" ||
+      !Number.isSafeInteger(value.number) ||
+      value.number <= 0 ||
+      (value.state !== "open" && value.state !== "closed")
+    ) {
+      throw new HunkExtensionUserError("GitHub returned malformed PR metadata.");
+    }
+    if (value.state === "closed") continue;
+    if (typeof value.base?.repo?.full_name !== "string") {
+      throw new HunkExtensionUserError("GitHub returned malformed PR metadata.");
+    }
+    let base: GitHubRepository;
+    try {
+      base = parseGitHubRepository(value.base.repo.full_name);
+    } catch {
+      throw new HunkExtensionUserError("GitHub returned malformed PR metadata.");
+    }
+    open.push({ ...base, number: String(value.number) });
+  }
+
+  if (response.headers.get("link")?.includes('rel="next"')) {
+    throw new HunkExtensionUserError(
+      `GitHub returned paginated PR matches for ${name}, so one pull request cannot be selected safely.`,
+      { suggestions: ["Pass the intended pull-request number explicitly."] },
+    );
+  }
+  if (open.length === 0) {
+    throw new HunkExtensionUserError(`No accessible open pull request matches ${name}.`, {
+      suggestions: ["Pass a pull-request number, owner/repo#number, or URL explicitly."],
+    });
+  }
+  if (open.length > 1) {
+    throw new HunkExtensionUserError(`Multiple accessible open pull requests match ${name}.`, {
+      suggestions: ["Pass the intended pull-request number explicitly."],
+    });
+  }
+  const [{ owner, repo, number }] = open;
+  return { owner, repo, number };
+}
+
 /** Fetches one GitHub pull-request diff without invoking the gh CLI. */
 export async function fetchGitHubPullRequestDiff(
   target: ResolvedGitHubPullRequest,
@@ -127,7 +290,7 @@ export async function fetchGitHubPullRequestDiff(
     response = await fetchImpl(
       `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/pulls/${target.number}`,
       {
-        headers: githubDiffHeaders(env, "hunk-github-pr-extension"),
+        headers: githubHeaders(env, "hunk-github-pr-extension"),
         redirect: "manual",
         signal,
       },
@@ -160,7 +323,7 @@ export async function fetchGitHubCommitDiff(
   try {
     response = await fetchImpl(
       `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}/commits/${sha}`,
-      { headers: githubDiffHeaders(env, "hunk-gh-extension"), redirect: "manual", signal },
+      { headers: githubHeaders(env, "hunk-gh-extension"), redirect: "manual", signal },
     );
   } catch (error) {
     if (error instanceof HunkExtensionUserError) throw error;
@@ -196,7 +359,7 @@ export async function fetchGitHubCompareDiff(
     const range = `${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
     response = await fetchImpl(
       `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}/compare/${range}`,
-      { headers: githubDiffHeaders(env, "hunk-gh-extension"), redirect: "manual", signal },
+      { headers: githubHeaders(env, "hunk-gh-extension"), redirect: "manual", signal },
     );
   } catch (error) {
     if (error instanceof HunkExtensionUserError) throw error;

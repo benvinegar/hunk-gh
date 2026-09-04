@@ -193,6 +193,45 @@ describe("GitHub command dispatch", () => {
   });
 });
 
+describe("GitHub branch PR dispatch", () => {
+  test("discovers through a fork commit and fetches the diff from the upstream base", async () => {
+    const temporaryRoot = createTestDirectory();
+    const requests: string[] = [];
+    const registration = registerTestExtension(
+      createGitHubPrExtension({
+        temporaryRoot,
+        env: {},
+        resolveOrigin: async () => "git@github.com:contributor/hunk.git",
+        resolveCheckout: async () => ({ branch: "feature/topic", sha: "a".repeat(40) }),
+        fetchImpl: (async (url) => {
+          requests.push(String(url));
+          return requests.length === 1
+            ? new Response(
+                JSON.stringify([
+                  {
+                    number: 321,
+                    state: "open",
+                    base: { repo: { full_name: "modem-dev/hunk" } },
+                  },
+                ]),
+              )
+            : new Response("diff --git a/a b/a\n");
+        }) as GitHubFetch,
+      }),
+    );
+    if (!registration.handler || !registration.shutdown) {
+      throw new Error("Expected command and shutdown registrations.");
+    }
+    const output = createTestContext();
+    const result = await registration.handler(["pr"], output.context);
+    if (result.kind !== "delegate") throw new Error("Expected patch delegation.");
+    expect(requests[0]).toContain(`/repos/contributor/hunk/commits/${"a".repeat(40)}/pulls`);
+    expect(requests[1]).toContain("/repos/modem-dev/hunk/pulls/321");
+    expect(output.stderr.join("")).toContain("pull request modem-dev/hunk#321");
+    await registration.shutdown({}, {} as never);
+  });
+});
+
 describe("GitHub extension temporary patch lifecycle", () => {
   test("cancels after patch creation without returning a delegate", async () => {
     const temporaryRoot = createTestDirectory();

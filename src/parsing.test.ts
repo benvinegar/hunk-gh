@@ -10,7 +10,13 @@ import {
 } from "./parsing";
 
 describe("GitHub PR invocation parsing", () => {
-  test("accepts numbers, repository shorthands, URLs, and both repo option forms", () => {
+  test("accepts an omitted locator, numbers, shorthands, URLs, and repo options", () => {
+    expect(parseGitHubPrInvocation([])).toEqual({
+      locator: undefined,
+      explicitRepository: undefined,
+      patchArgs: [],
+      help: false,
+    });
     expect(parseGitHubPrInvocation(["123"])).toMatchObject({
       locator: { number: "123" },
       help: false,
@@ -44,7 +50,6 @@ describe("GitHub PR invocation parsing", () => {
 
   test("rejects malformed or ambiguous invocations", () => {
     for (const args of [
-      [],
       ["0"],
       ["-1"],
       ["1.5"],

@@ -21,7 +21,13 @@ New Hunk sessions load it automatically.
 
 ## Use
 
-Open a pull request from the current checkout. The repository is inferred from its GitHub `origin`:
+Open the single accessible pull request for the current branch. The repository is inferred from its GitHub `origin`:
+
+```bash
+hunk gh pr
+```
+
+Pass a number when you want a specific pull request:
 
 ```bash
 hunk gh pr 123

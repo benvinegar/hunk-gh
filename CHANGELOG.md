@@ -6,6 +6,8 @@ All notable user-visible changes to this project are documented in this file.
 
 ### Added
 
+- `hunk gh pr` can discover the single open pull request for the current branch.
+
 ### Changed
 
 ### Fixed
