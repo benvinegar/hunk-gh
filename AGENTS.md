@@ -3,8 +3,18 @@
 ## Purpose
 
 - Hunk extension that exposes GitHub workflows under `hunk gh`.
-- `hunk gh pr` fetches a pull request diff directly from GitHub and delegates to Hunk's built-in `patch` command.
+- `hunk gh pr` and `hunk gh commit` fetch diffs directly from GitHub and delegate to Hunk's built-in `patch` command.
 - The extension ships as TypeScript source with no runtime dependencies.
+
+## Architecture
+
+- `index.ts` is the folder-extension entry point and public re-export surface; keep it tiny.
+- `src/parsing.ts` validates PR, commit, repository, and delegated patch arguments.
+- `src/repository.ts` parses and resolves GitHub origins without invoking a shell.
+- `src/github.ts` owns authenticated, bounded, redirect-safe GitHub diff requests.
+- `src/temporaryPatch.ts` owns restrictive temporary patch creation and cleanup.
+- `src/extension.ts` dispatches commands and delegates fetched diffs to Hunk.
+- Tests stay colocated with each module under `src/`.
 
 ## Working rules
 

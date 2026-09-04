@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "types": ["bun"]
   },
-  "include": ["*.ts"]
+  "include": ["index.ts", "src/**/*.ts"]
 }
